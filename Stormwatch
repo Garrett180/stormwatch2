@@ -1,0 +1,147 @@
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import requests
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+from io import StringIO
+import folium
+from streamlit_folium import st_folium
+
+st.set_page_config(page_title="Stormwatch", layout="wide")
+st.title("Stormwatch: Severe Weather Predictor")
+
+# -----------------------------
+# MAP: SPC Convective Outlook
+# -----------------------------
+st.subheader("Current SPC Severe Weather Risk Map")
+
+# Base map
+m = folium.Map(location=[38.5, -98], zoom_start=4, tiles="cartodbpositron")
+
+# Risk category colors
+risk_colors = {
+    "MRGL": "#00FF00",
+    "SLGT": "#FFFF00",
+    "ENH": "#FFA500",
+    "MDT": "#FF0000",
+    "HIGH": "#8B00FF"
+}
+
+# Load SPC GeoJSON
+try:
+    geojson_url = "https://www.spc.noaa.gov/products/outlook/day1otlk.json"
+    spc_geojson = requests.get(geojson_url).json()
+
+    def style_function(feature):
+        risk = feature['properties'].get('label', 'UNK')
+        return {
+            'fillColor': risk_colors.get(risk, '#999999'),
+            'color': 'black',
+            'weight': 1,
+            'fillOpacity': 0.4
+        }
+
+    folium.GeoJson(
+        spc_geojson,
+        name="SPC Outlook",
+        style_function=style_function,
+        tooltip=folium.GeoJsonTooltip(fields=['label'], aliases=['Risk:'])
+    ).add_to(m)
+
+    folium.LayerControl().add_to(m)
+
+except Exception as e:
+    st.error("Could not load SPC Outlook data.")
+    st.exception(e)
+
+st_folium(m, width=1000, height=500)
+
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+with st.sidebar:
+    st.header("Data Source")
+    use_sample = st.checkbox("Use NOAA sample data", value=True)
+    uploaded_file = st.file_uploader("...or upload your own NOAA CSV", type=["csv"])
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+@st.cache_data
+def load_data():
+    url = "https://www.ncei.noaa.gov/data/global-summary-of-the-day/access/2022/01001099999.csv"
+    r = requests.get(url)
+    return pd.read_csv(StringIO(r.text))
+
+if use_sample:
+    df = load_data()
+elif uploaded_file:
+    df = pd.read_csv(uploaded_file)
+else:
+    st.warning("Please upload a file or use the sample dataset.")
+    st.stop()
+
+st.subheader("Raw Data Preview")
+st.dataframe(df.head())
+
+# -----------------------------
+# FEATURE ENGINEERING
+# -----------------------------
+st.subheader("Feature Engineering")
+features = df[["TEMP", "DEWP", "SLP", "WDSP", "MAX", "MIN", "PRCP"]].copy()
+features = features.dropna()
+features["SEVERE"] = (features["PRCP"] > 25.0).astype(int)
+X = features.drop("SEVERE", axis=1)
+y = features["SEVERE"]
+
+# -----------------------------
+# TRAIN MODEL
+# -----------------------------
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
+y_pred = model.predict(X_test)
+
+st.subheader("Model Evaluation")
+st.text("Classification Report:")
+st.code(classification_report(y_test, y_pred), language='text')
+
+# Feature Importance
+st.subheader("Feature Importance")
+feat_imp = pd.Series(model.feature_importances_, index=X.columns)
+fig, ax = plt.subplots()
+feat_imp.sort_values().plot(kind='barh', ax=ax, title='Feature Importance')
+st.pyplot(fig)
+
+# -----------------------------
+# STORM SIMULATION
+# -----------------------------
+st.subheader("Storm Simulation")
+steps = st.slider("Simulation Time Steps", min_value=50, max_value=200, value=100)
+temp = 30
+humidity = 70
+pressure = 1013
+storm_intensity = []
+
+for t in range(steps):
+    instability = (temp - 25) * (humidity / 100)
+    pressure_drop = (1013 - pressure) / 10
+    intensity = instability + pressure_drop
+    storm_intensity.append(intensity)
+    temp -= np.random.uniform(0.05, 0.2)
+    humidity += np.random.uniform(0.1, 0.5)
+    pressure -= np.random.uniform(0.5, 1.0)
+
+fig2, ax2 = plt.subplots(figsize=(8, 3))
+ax2.plot(storm_intensity, label="Storm Intensity")
+ax2.set_xlabel("Time Steps")
+ax2.set_ylabel("Intensity")
+ax2.set_title("Simulated Storm Intensity Over Time")
+ax2.legend()
+ax2.grid(True)
+st.pyplot(fig2)
